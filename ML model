@@ -1,0 +1,131 @@
+#데이터 불러오기
+titanic=read.csv('titanic3.csv')
+#컬럼명 확인
+head(titanic)
+#필요없는 변수를 제외한 새로운 데이터프레임 생성
+titanic<-titanic[,!names(titanic) %in% c('boat','body','home.dest')]
+#변수 제외여부를 확인하기 위해 컬럼명 재확인
+head(titanic)
+#데이터타입 변환이 필요한 변수가 있는지 확인하기 위해 내부구조 확인
+str(titanic)
+#데이터타입 변환 후 내부구조 확인
+titanic$pclass<-as.factor(titanic$pclass)
+titanic$name<-as.character(titanic$name)
+titanic$sex<-as.factor(titanic$sex)
+titanic$ticket<-as.character(titanic$ticket)
+titanic$cabin<-as.character(titanic$cabin)
+titanic$embarked<-as.factor(titanic$embarked)
+titanic$survived<-factor(titanic$survived, levels=c(0,1), labels=c("dead","survived"))
+str(titanic)
+#'embarked'변수의 팩터 레벨값에 있는 ""값이 무엇인지 확인
+levels(titanic$embarked)
+table(titanic$embarked)
+#'embarked'변수에 빈 문자열이 NA임을 짐작하고 빈 문자열 대신 NA로 수정
+levels(titanic$embarked)[1]<-NA
+#table()함수는 값을 출력할 때, NA값을 제외하므로 useNA = 'always'로 설정하여 항상 출력함
+table(titanic$embarked, useNA = 'always')
+#데이터가 잘 변경되었는지 확인
+str(titanic)
+
+
+#교차분석, 모델성능평가, 시각화 등 기계학습 전반에 걸친 기능을 제공하는 caret패키지를 라이브러리에 저장
+library(caret)
+#재현 가능한 임의의 결과를 얻기 위해 seed를 설정하여 난수를 생성
+#######################################################################
+set.seed(137)
+#데이터를 titanic.test와 titanic.train로 분리. 
+#createDataPartition()함수를 이용하여 titanic.test와 titanic.train에서 생존자와 사망자의 수 비율을 일정하게 함
+test_idx<-createDataPartition(titanic$survived,p=0.1)$Resample1
+titanic.test<-titanic[test_idx,]
+titanic.train<-titanic[-test_idx,]
+#titanic.test와 titanic.train 각각의 개수 및 비율 확인=>titanic.test와 titanic.train에서 생존자와 사망자의 수 비율이 일정함을 확인
+NROW(titanic.test)
+prop.table(table(titanic.test$survived))
+NROW(titanic.train)
+prop.table(table(titanic.train$survived))
+#이후에 사용하기 편리하도록 저장
+#추가: R의 메모리 문제를 해결하기 위해서, 비교적 큰 데이터는 RData로 저장해놓고 읽어오는 것이 효율적인 방법
+save(titanic,titanic.test,titanic.train,file = 'titanic.RData')
+
+################################################################################################
+#데이터를 k겹 교차검증으로 분할해주는 createFolds()함수를 사용하여 10겹 교차 검증을 위한 데이터 분리
+data_for_ten_fold_cv<-createFolds(titanic.train$survived,k=10)
+#10겹 교차검증을 할 훈련데이터와 검증데이터로 분리해주는 함수 정의
+create_ten_fold_cv<-function(){
+    set.seed(137)
+    lapply(data_for_ten_fold_cv,function(idx){
+        return(list(train=titanic.train[-idx,],validation=titanic.test[idx,]))
+    })
+}
+x<-create_ten_fold_cv()
+str(x)
+head(x$Fold01$train)
+head(x$Fold01$validation)
+######################################################################################################
+
+
+#모델 작성에 앞서 데이터가 어떤 모습인지 살펴보기
+install.packages('Hmisc')
+library(Hmisc)
+#교차 검증의 첫번째 분할에서의 훈련데이터를 사용한 데이터 탐색
+data<-x[[1]]$train
+#summary()를 사용해 데이터의 분포를 살펴봄
+#method='reverse'는 종속변수 survived에 따라 독립변수들을 분할하여 보여줌
+summary(survived~pclass+sex+age+sibsp+parch+fare+embarked, data = data, method='reverse')
+#데이터 시각화하여 변수 간 관계 살펴보기
+#데이터 시각화에 앞서 결측치(NA) 제거하고 featurePlot(팩터 데이터 타입에서 사용 불가능) 그리기
+data <- create_ten_fold_cv()[[1]]$train
+data.complete <- data[complete.cases(data), ]
+featurePlot(data.complete[,sapply(names(data.complete),function(n) { is.numeric(data.complete [, n]) })],data.complete [, c("survived")],"ellipse")
+#mosaicplot(팩터 데이터 타입에서 사용 가능) 그리기
+mosaicplot(survived ~ pclass + sex, data=data, color=TRUE,main="pclass and sex")
+#탑승자 수
+xtabs(~sex+pclass,data=data)
+#생존자 수
+xtabs(survived=='survived'~sex+pclass,data=data)
+#생존율
+xtabs(survived=='survived'~sex+pclass,data=data)/xtabs(~sex+pclass,data=data)
+
+
+#학습 모델 만들기
+library(rpart)
+m <- rpart(survived ~ pclass + sex + age + sibsp + parch + fare + embarked,data=titanic.train)
+p <- predict(m, newdata=titanic.train, type="class")
+head(p)
+#교차 테스트 데이터에 대해 예측값을 구해봄
+library(foreach)
+folds <- create_ten_fold_cv()
+rpart_result <- foreach(f=folds) %do% {
+    model_rpart <- rpart(survived ~ pclass + sex + age + sibsp + parch + fare + embarked,data=f$train) 
+    predicted <- predict(model_rpart, newdata=f$validation,type="class")
+    return(list(actual=f$validation$survived, predicted=predicted))}
+head(rpart_result)
+
+
+#####################################################################################
+#정확도 평가
+evaluation <- function(lst) {
+   accuracy <- sapply(lst, function(one_result) {
+     return(sum(one_result$predicted == one_result$actual) / NROW(one_result$actual))
+   })
+   print(sprintf("MEAN +/- SD: %.3f +/- %.3f",
+                  mean(accuracy), sd(accuracy)))
+   return(accuracy)
+ }
+(rpart_accuracy <- evaluation(rpart_result))
+################################################################################
+library(party)
+ctree_result <- foreach(f=folds) %do% {
+    model_ctree <- ctree(
+      survived ~ pclass + sex + age + sibsp + parch + fare + embarked,
+      data=f$train)
+    predicted <- predict(model_ctree, newdata=f$validation,
+                        type="response")
+    return(list(actual=f$validation$survived, predicted=predicted))
+  }
+(ctree_accuracy <- evaluation(ctree_result))
+
+
+plot(density(rpart_accuracy), main="rpart VS ctree")
+
+lines(density(ctree_accuracy), col="red", lty="dashed")
